@@ -1,0 +1,67 @@
+name: "DriftLock"
+description: "Fail the build the moment a pinned MCP server silently changes its tool surface. Dependabot for your agent's trust boundary."
+branding:
+  icon: "lock"
+  color: "red"
+inputs:
+  config:
+    description: "Path to driftlock.json (relative to your repo root)"
+    required: false
+    default: "driftlock.json"
+  lock:
+    description: "Path to mcp.lock"
+    required: false
+    default: "mcp.lock"
+  fail-on:
+    description: "Minimum severity that fails the build (critical|high|medium|low)"
+    required: false
+    default: "high"
+  comment:
+    description: "Post the drift report as a sticky PR comment"
+    required: false
+    default: "true"
+outputs:
+  drift-detected:
+    description: "true if any drift was found"
+    value: ${{ steps.run.outputs.drift_detected }}
+  gate-failed:
+    description: "true if drift met the fail threshold"
+    value: ${{ steps.run.outputs.gate_failed }}
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+    # Build DriftLock from this action's own checked-out source — no npm
+    # dependency, works the moment the repo is public.
+    - shell: bash
+      run: |
+        npm --prefix "$GITHUB_ACTION_PATH" ci
+    - id: run
+      shell: bash
+      env:
+        GITHUB_OUTPUT_FILE: ${{ github.output }}
+      run: |
+        set +e
+        node "$GITHUB_ACTION_PATH/dist/src/cli.js" verify \
+          --config "${{ inputs.config }}" \
+          --lock "${{ inputs.lock }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          --markdown --github-output "$GITHUB_OUTPUT" > driftlock-report.md
+        echo "exit=$?" >> "$GITHUB_OUTPUT"
+        cat driftlock-report.md
+    - if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      # Fork PRs lack pull-requests:write; don't let a failed comment fail the
+      # job — the real gate is the exit-code step below.
+      continue-on-error: true
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: driftlock
+        path: driftlock-report.md
+    - shell: bash
+      run: |
+        if [ "${{ steps.run.outputs.exit }}" != "0" ]; then
+          echo "::error title=DriftLock::A pinned MCP server drifted at or above the '${{ inputs.fail-on }}' threshold. Review the report, then run 'driftlock update' to re-pin intentionally."
+          exit 1
+        fi

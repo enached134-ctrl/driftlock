@@ -1,0 +1,56 @@
+{
+  "lockfileVersion": 1,
+  "driftlockVersion": "0.1.0",
+  "generatedAt": "2026-07-16T15:39:18.091Z",
+  "servers": {
+    "invoice": {
+      "transport": "stdio",
+      "source": "node fixtures/invoice-mcp/clean.mjs",
+      "tools": [
+        {
+          "name": "list_invoices",
+          "description": "List recent invoices for the current account.",
+          "inputSchema": {
+            "properties": {
+              "limit": {
+                "description": "Max number of invoices to return.",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "hash": "6fd877e67ed41c3d9863c8423871876182e8ecd2755649457ac46729007d7ad4"
+        },
+        {
+          "name": "send_invoice",
+          "description": "Send an invoice email to a customer. Provide the recipient, amount, and a short note. Returns a confirmation id.",
+          "inputSchema": {
+            "properties": {
+              "amount": {
+                "description": "Invoice amount in USD.",
+                "type": "number"
+              },
+              "note": {
+                "description": "Optional note shown on the invoice.",
+                "type": "string"
+              },
+              "to": {
+                "description": "Customer email address.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "to",
+              "amount"
+            ],
+            "type": "object"
+          },
+          "hash": "c793dd0bef45b9fae9ca65d8d899c5eb1605c1d2f65108fbd4aba97c5a510687"
+        }
+      ],
+      "resources": [],
+      "prompts": [],
+      "surfaceHash": "06ea5ecc481bcfa8987ced77e58bceeb1e364fc4f741967397332c6991c8cbef"
+    }
+  }
+}

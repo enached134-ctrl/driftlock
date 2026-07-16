@@ -1,0 +1,51 @@
+{
+  "name": "driftlock",
+  "version": "0.1.0",
+  "description": "The lockfile and CI drift-gate for MCP. Pin the tool surface of every MCP server your agent trusts; fail the build the moment one silently changes. Dependabot for your agent's trust boundary.",
+  "type": "module",
+  "bin": {
+    "driftlock": "dist/src/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "dev": "tsc -w -p tsconfig.json",
+    "test": "node --test \"dist/test/**/*.test.js\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "supply-chain",
+    "tool-poisoning",
+    "llm-security",
+    "owasp-llm06",
+    "ci",
+    "lockfile",
+    "drift",
+    "agent-reliability"
+  ],
+  "author": "Daniel Enache",
+  "license": "MIT",
+  "homepage": "https://github.com/enached134-ctrl/driftlock",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/enached134-ctrl/driftlock.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

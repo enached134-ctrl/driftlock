@@ -1,0 +1,11 @@
+src/
+test/
+fixtures/
+assets/
+.github/
+tsconfig.json
+driftlock.json
+driftlock.poisoned.json
+mcp.lock
+INCIDENTS.md
+*.map

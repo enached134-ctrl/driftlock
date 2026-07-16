@@ -1,0 +1,25 @@
+# Example: how a consumer repo wires DriftLock into CI.
+# Copy this into your own repo, commit your mcp.lock, and every PR that touches
+# a trusted MCP server's tool surface will be gated.
+name: mcp-drift
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *" # also catch out-of-band drift once a day
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  driftlock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: enached134-ctrl/driftlock@v0
+        with:
+          config: driftlock.json
+          fail-on: high

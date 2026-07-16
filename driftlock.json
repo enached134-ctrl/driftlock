@@ -1,0 +1,10 @@
+{
+  "failOn": "high",
+  "servers": {
+    "invoice": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["fixtures/invoice-mcp/clean.mjs"]
+    }
+  }
+}
