@@ -103,6 +103,8 @@ Then gate every PR:
   with: { config: driftlock.json, fail-on: high }
 ```
 
+Full runnable workflow: [`examples/mcp-drift.yml`](examples/mcp-drift.yml).
+
 DriftLock posts the diff as a sticky PR comment and red-X's the check. When a change is intentional, you review it and run `driftlock update` to re-pin — **nothing that drifts ships unreviewed.**
 
 ---

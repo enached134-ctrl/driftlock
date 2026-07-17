@@ -1,0 +1,32 @@
+# Example: wire DriftLock into a consumer repo's CI.
+#
+# Copy this to .github/workflows/mcp-drift.yml in YOUR repo, commit your
+# driftlock.json + mcp.lock, and every PR that changes a trusted MCP server's
+# tool surface will be gated. The daily `schedule` also catches out-of-band
+# drift — an HTTP/remote MCP server can change server-side with no PR.
+#
+# Note: if one of your servers is a LOCAL Node script with its own npm deps
+# (like this repo's invoice fixture), add an install step before the action:
+#   - uses: actions/setup-node@v4
+#     with: { node-version: 20 }
+#   - run: npm ci        # so the local server can load its dependencies
+# Most real servers are external commands (npx / a binary / a URL) and need none.
+name: mcp-drift
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  driftlock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: enached134-ctrl/driftlock@v0
+        with:
+          config: driftlock.json
+          fail-on: high
