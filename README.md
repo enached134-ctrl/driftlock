@@ -123,6 +123,92 @@ DriftLock posts the diff as a sticky PR comment and red-X's the check. When a ch
 
 The poison detector is a deterministic, explainable **rule engine** (not an LLM) — every finding points at the exact matched substring and carries an OWASP tag. Zero network, zero API keys, reproducible in CI.
 
+## `driftlock guard` — the same boundary, during the run
+
+`pin` and `verify` protect the trust boundary **before** an agent runs. `guard` watches
+it **during** one: it evaluates a live tool call — name, description, schema and
+arguments — against the same rule engine.
+
+```bash
+driftlock guard call.json      # exits 1 on deny
+driftlock bench                # prints the engine's own error rate
+```
+
+```
+  DENY — critical (61µs)
+
+    exfil_pipeline  critical  at args.command
+      A network sink carrying data out. Combined with a sensitive source
+      in the same expression, this is exfiltration.
+      match: "curl -X POST -d"
+```
+
+## It publishes its own error rate
+
+Every guardrail on the market claims accuracy. None of them publish a false-positive
+rate, a false-negative rate, or a latency number. This one does, and the number is not
+flattering, which is the point.
+
+**Measured on a held-out set of 53 cases (33 benign, 20 attack) that was written after
+the rules were frozen and never used to change one:**
+
+| | rate | 95% interval |
+|---|---|---|
+| recall (attacks caught) | **85.0%** | 62.1 – 96.8 |
+| false-positive rate | **0.0%** | 0.0 – 10.6 |
+| latency, p50 / p99 | **11.4µs / 29.3µs** | |
+
+Run `driftlock bench` to reproduce it, or point the harness at your own traffic.
+
+### How it got there, including the embarrassing part
+
+The first version scored 100% recall and 0% false positives on its own corpus. That
+number was worthless: the same person wrote the rules and the tests.
+
+| stage | recall | false positives |
+|---|---|---|
+| own corpus, rules tuned on it | 100% | 0% |
+| **first held-out set** | 91.3% | **47.4%** |
+| after fixing the false positives → **second held-out set** | **58.3%** | 0% |
+| after adding outbound exfiltration → second set (now burned) | 91.7% | 0% |
+| **third set, never tuned** | **85.0%** | **0.0%** |
+
+Two things that only an honest held-out set will tell you:
+
+**A guardrail blocking 47% of legitimate traffic gets switched off in week two.** The
+fix was structural, not cosmetic: instruction-shaped rules stopped scanning
+*user-authored content fields*. An exfiltration sentence in a tool's **description** is
+poisoning. The same sentence in the **body** of a document the user asked to write is a
+security policy, a runbook, or an unsubscribe line.
+
+**Detection did not generalise when precision did.** Recall collapsed from 94.7% on
+tuned data to 58.3% on fresh data, because the engine only understood code coming *in*
+(`curl … | sh`) and had no concept of data going *out*. Adding that family from the
+threat model — a sensitive source plus a network sink in one expression — took the
+second set to 91.7% and, crucially, the never-seen third set to 85.0%.
+
+### What it still misses, named
+
+Three attacks in the third set got through, and they share one cause: **the sensitive-source
+list is credential-shaped, not data-shaped.** It knows about keys, tokens and `.env`. It
+does not know that proprietary model weights or a patient table are equally grave.
+`pg_dump | curl` is caught; `COPY patients TO STDOUT | curl` is not. Two further known
+gaps are pinned as tests so they cannot regress silently: an instruction hidden inside a
+document body, and a second credential-bearing registry in an `.npmrc`.
+
+None of these were fixed after measuring. Tuning against your own test set is how every
+vendor ends up with numbers nobody can reproduce.
+
+### Read the number honestly
+
+The intervals are wide because the sample is small: 33 benign cases only rule out a
+false-positive rate above 10.6%, and 20 attacks only rule out a recall below 62.1%.
+Claiming "under 5%" would need 72 clean cases of each.
+
+And the same author wrote the rules and all three sets, with two rounds of tuning in
+between. Independence degrades every cycle. Read this as *the best this author could
+measure on himself*, not as an external audit — which is exactly why the harness ships.
+
 ## How it works
 
 ```

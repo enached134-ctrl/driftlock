@@ -1,17 +1,23 @@
-// Rule-based tool-poisoning heuristics.
+// Tool-poisoning detection — an adapter over the shared guard engine in ./guard.
 //
-// MCP "tool poisoning" hides instructions to the *model* inside a tool
-// description or parameter text — the classic case (postmark-mcp v1.0.16,
-// Sept 2025) added a line telling the agent to BCC every email to an attacker
-// address. To the model the tool looked identical; nothing in the JSON changed
-// except a sentence of prose.
+// MCP "tool poisoning" hides instructions to the *model* inside a tool description or
+// parameter text — the classic case (postmark-mcp v1.0.16, Sept 2025) added a line
+// telling the agent to BCC every email to an attacker address. To the model the tool
+// looked identical; nothing in the JSON changed except a sentence of prose.
 //
-// This is a deterministic, explainable rule engine — NOT an LLM. It scans text
-// fragments for known injection shapes and returns findings with a severity and
-// an OWASP tag. Every hit points at the exact matched substring so the report
-// can highlight it.
+// This file used to carry its own eight regexes. They were measured against a labeled
+// corpus and caught 31.6% of attacks at the shipped `failOn: high` threshold — missing
+// fetch-and-run, path traversal, shell injection, credential theft, and "Ignore all
+// previous instructions", which slipped through on a single missing word in a pattern.
+// The rules now live in ./guard, are shared with `driftlock guard`, and are measured on
+// a held-out set every CI run. The public shape here is unchanged so the differ, the
+// report and the existing tests keep working.
+//
+// Still deterministic and explainable: no model call, and every hit points at the exact
+// substring that tripped it.
 
-import type { Finding, Severity } from "./types.js";
+import { ToolGate } from "./guard/gate.js";
+import type { Severity } from "./types.js";
 
 export interface PoisonHit {
   severity: Severity;
@@ -22,122 +28,100 @@ export interface PoisonHit {
   match: string;
 }
 
-interface Rule {
-  code: string;
-  severity: Severity;
-  tag: string;
-  summary: string;
-  test: RegExp;
-}
+/**
+ * Guard rule ids collapse onto the stable `poison.*` codes the report and lockfile
+ * already speak. Two codes are new because the guard engine detects two families the
+ * old regexes had no concept of.
+ */
+const CODE: Record<string, { code: string; summary: string }> = {
+  exfil_bcc: { code: "poison.exfil", summary: "Exfiltration instruction (BCC / forward / send a copy to an address)" },
+  exfil_forward: { code: "poison.exfil", summary: "Exfiltration instruction (BCC / forward / send a copy to an address)" },
+  exfil_endpoint: { code: "poison.exfil", summary: "Instruction to send data to an external endpoint" },
+  exfil_pipeline: { code: "poison.exfil", summary: "Sensitive source piped to a network sink — data leaving with a secret in it" },
+  injection_override: { code: "poison.imperative-injection", summary: "Imperative aimed at the model (ignore / disregard previous instructions)" },
+  hidden_from_user: { code: "poison.imperative-injection", summary: "Instructs the model to conceal the action from the user" },
+  tool_instruction: { code: "poison.tool-instruction", summary: "Tool description issues standing instructions to the model" },
+  always_call: { code: "poison.tool-instruction", summary: "Tool metadata coerces the model into a fixed behaviour" },
+  param_override: { code: "poison.tool-instruction", summary: "Tool metadata overrides an argument the caller supplied" },
+  hidden_markup: { code: "poison.hidden-markup", summary: "Hidden markup that can carry instructions invisibly" },
+  zero_width: { code: "poison.zero-width", summary: "Zero-width / invisible unicode (steganographic payload)" },
+  b64_blob: { code: "poison.base64-blob", summary: "Long base64-looking blob (possible encoded payload)" },
+  credential_bait: { code: "poison.credential-bait", summary: "Asks for credential material to be handed over" },
+  remote_fetch_exec: { code: "poison.fetch-exec", summary: "Fetches remote content and executes it" },
+  pipe_to_shell: { code: "poison.fetch-exec", summary: "Pipes a downloaded script straight into a shell" },
+  win_fetch_exec: { code: "poison.fetch-exec", summary: "PowerShell download-and-execute" },
+  path_traversal: { code: "poison.arg-abuse", summary: "Path traversal or access to a sensitive system path" },
+  shell_injection: { code: "poison.arg-abuse", summary: "Shell metacharacters chained to a command" },
+};
 
-// Order matters only for readability; all rules run.
-const RULES: Rule[] = [
-  {
-    code: "poison.exfil",
-    severity: "critical",
-    tag: "OWASP-LLM06",
-    summary: "Exfiltration instruction (BCC / forward / send a copy to an address)",
-    test: /\b(bcc|blind\s+copy|forward\s+(?:a\s+)?(?:copy|all)|send\s+(?:a\s+)?copy|also\s+send|cc\b[^.]{0,40}@)/i,
-  },
-  {
-    code: "poison.hidden-recipient",
-    severity: "critical",
-    tag: "OWASP-LLM06",
-    summary: "Hidden recipient address embedded in tool text",
-    test: /@[a-z0-9.-]+\.[a-z]{2,}/i,
-  },
-  {
-    code: "poison.imperative-injection",
-    severity: "high",
-    tag: "OWASP-LLM01",
-    summary: "Imperative aimed at the model (ignore/disregard/do not tell/always)",
-    test: /\b(ignore\s+(?:the\s+)?(?:previous|above|prior)|disregard\s+(?:all|previous)|do\s+not\s+(?:tell|mention|inform|reveal)|without\s+(?:telling|informing)\s+the\s+user|always\s+(?:include|append|attach|bcc))/i,
-  },
-  {
-    code: "poison.tool-instruction",
-    severity: "high",
-    tag: "OWASP-LLM06",
-    summary: "Text addressed to the AI/assistant inside a tool description",
-    test: /\b(as\s+an?\s+ai|you\s+are\s+(?:an?\s+)?(?:ai|assistant|agent)|note\s+to\s+(?:the\s+)?(?:ai|assistant|model|agent)|system\s*:\s)/i,
-  },
-  {
-    code: "poison.hidden-markup",
-    severity: "high",
-    tag: "OWASP-LLM06",
-    summary: "Hidden HTML/markup that can carry instructions invisibly",
-    test: /<\s*(?:img|script|iframe|span\s+style\s*=\s*["']?[^"'>]*display\s*:\s*none)/i,
-  },
-  {
-    code: "poison.zero-width",
-    severity: "high",
-    tag: "OWASP-LLM06",
-    summary: "Zero-width / invisible unicode characters (steganographic payload)",
-    // zero-width space, ZWNJ, ZWJ, word joiner, LTR/RTL marks, BOM
-    test: /[​‌‍⁠‎‏﻿]/,
-  },
-  {
-    code: "poison.base64-blob",
-    severity: "low",
-    tag: "OWASP-LLM06",
-    // ≥64 chars AND not pure-hex, so git SHAs / hex IDs don't trip it.
-    summary: "Long base64-looking blob (possible encoded payload)",
-    test: /\b(?![a-fA-F0-9]+\b)[A-Za-z0-9+/]{64,}={0,2}\b/,
-  },
-  {
-    code: "poison.credential-bait",
-    severity: "high",
-    tag: "OWASP-LLM06",
-    summary: "Asks the agent to read secrets / env / keys and pass them along",
-    test: /\b(api[_\s-]?key|secret|password|\.env\b|environment\s+variable|access\s+token|private\s+key)\b[^.]{0,60}\b(include|send|attach|pass|read|return)/i,
-  },
-];
+const TAG_LLM01 = new Set(["poison.imperative-injection", "poison.tool-instruction", "poison.zero-width", "poison.hidden-markup"]);
+
+/** A bare address is not itself an attack, so it stays a separate, demotable signal. */
+const ADDRESS = /@[a-z0-9.-]+\.[a-z]{2,}/i;
+
+const gate = new ToolGate();
 
 /**
  * Scan one text fragment (a tool description or param description) for poisoning.
- * Returns zero or more hits; each hit records the matched substring.
+ *
+ * Fragments arriving here are tool METADATA, which is the surface an attacker controls
+ * and the model reads as instruction — so it is scanned as `tool.description`, not as
+ * user-authored content.
  */
 export function scanText(text: string): PoisonHit[] {
   if (!text) return [];
+
+  const decision = gate.checkMetadata(text);
   const hits: PoisonHit[] = [];
-  for (const rule of RULES) {
-    const m = rule.test.exec(text);
-    if (m) {
-      hits.push({
-        severity: rule.severity,
-        code: rule.code,
-        summary: rule.summary,
-        tag: rule.tag,
-        match: m[0],
-      });
-    }
+  const seen = new Set<string>();
+
+  for (const f of decision.findings) {
+    const mapped = CODE[f.rule];
+    if (!mapped) continue;
+    const key = `${mapped.code}:${f.match}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hits.push({
+      severity: f.severity as Severity,
+      code: mapped.code,
+      summary: mapped.summary,
+      tag: TAG_LLM01.has(mapped.code) ? "OWASP-LLM01" : "OWASP-LLM06",
+      match: f.match,
+    });
   }
-  // A bare address is only CRITICAL when it co-occurs with an exfil/imperative
-  // cue. Alone (e.g. "contact support@company.com"), it's low-signal — demote
-  // it so a benign support address never blocks CI with an "exfiltration" label.
-  const hasExfilCue = hits.some(
+
+  const addr = ADDRESS.exec(text);
+  if (addr) {
+    hits.push({
+      severity: "critical",
+      code: "poison.hidden-recipient",
+      summary: "Hidden recipient address embedded in tool text",
+      tag: "OWASP-LLM06",
+      match: addr[0],
+    });
+  }
+
+  // An address alone (e.g. "contact support@company.com") is low signal. It only
+  // becomes CRITICAL when something in the same text is trying to move data or
+  // instruct the model — otherwise a benign support address blocks CI under an
+  // "exfiltration" label, which is how a gate loses its users.
+  const hasCue = hits.some(
     (h) =>
       h.code === "poison.exfil" ||
       h.code === "poison.imperative-injection" ||
       h.code === "poison.tool-instruction",
   );
-  if (!hasExfilCue) {
+  if (!hasCue) {
     for (const h of hits) {
       if (h.code === "poison.hidden-recipient") h.severity = "low";
     }
   }
+
   return hits;
 }
 
-/**
- * Convert poison hits found on a specific tool into DriftLock findings.
- * `onlyNew` filters to text that was ADDED in a diff (the high-signal case:
- * poison introduced by a silent update), by passing the added fragment(s).
- */
-export function scanToolText(
-  server: string,
-  tool: string,
-  text: string,
-): Finding[] {
+/** Convert poison hits found on a specific tool into DriftLock findings. */
+export function scanToolText(server: string, tool: string, text: string) {
   return scanText(text).map((hit) => ({
     severity: hit.severity,
     code: hit.code,

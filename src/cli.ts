@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // DriftLock CLI — pin / verify / update the MCP tool surface your agent trusts.
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { ToolGate } from "./guard/gate.js";
+import { runBench, formatBench } from "./guard/bench.js";
+import { EVAL3 } from "./guard/corpus-eval3.js";
 import { fingerprintServer, type ServerSpec } from "./fingerprint.js";
 import { diffServer } from "./diff.js";
 import { renderReport, renderMarkdown, renderJson } from "./report.js";
@@ -19,6 +22,14 @@ USAGE
   driftlock pin        Fingerprint every configured server and write mcp.lock
   driftlock verify     Re-fingerprint and fail if the surface drifted from mcp.lock
   driftlock update     Alias for pin — re-pin intentionally after reviewing drift
+  driftlock guard <f>  Evaluate one live tool call. Exits 1 if denied.
+  driftlock bench      Run the labeled corpus and print recall, FPR and latency
+
+  pin/verify guard the trust boundary BEFORE a run; guard watches it DURING one.
+  Both share the same rule engine, and bench is how its error rate gets published.
+
+  guard input (JSON): { "name": "...", "description": "...",
+                        "schema": {...}, "args": {...} }
 
 CONFIG (driftlock.json)
   {
@@ -37,6 +48,53 @@ FLAGS
   -h, --help        This help
 `;
 
+/**
+ * Publish the engine's own error rate.
+ *
+ * Measured on `guard/corpus-eval3.ts`, which was written after the rules were frozen
+ * and has never been used to change one. The dev corpora are excluded on purpose: a
+ * score on data you tuned against measures fit, not detection.
+ */
+function bench(asJson: boolean): number {
+  const result = runBench(new ToolGate(), EVAL3);
+  process.stdout.write(asJson ? `${JSON.stringify(result, null, 2)}\n` : formatBench(result));
+  return 0;
+}
+
+/** Evaluate one live tool call. Exit 1 on deny so a wrapper can refuse to proceed. */
+async function guard(file: string | undefined, argv: string[]): Promise<number> {
+  if (!file) {
+    fail("guard needs a JSON file describing the call. See 'driftlock --help'.");
+    return 2;
+  }
+  let call: unknown;
+  try {
+    call = JSON.parse(await readFile(file, "utf8"));
+  } catch (err) {
+    fail(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+  if (!call || typeof call !== "object" || typeof (call as { name?: unknown }).name !== "string") {
+    fail(`${file} must be an object with at least a "name".`);
+    return 2;
+  }
+
+  const gate = new ToolGate({ thorough: argv.includes("--thorough") });
+  const decision = gate.check(call as Parameters<ToolGate["check"]>[0]);
+
+  if (argv.includes("--json")) {
+    process.stdout.write(`${JSON.stringify(decision, null, 2)}\n`);
+  } else if (decision.findings.length === 0) {
+    process.stdout.write(`\n  allow — no findings (${decision.latencyUs.toFixed(1)}µs)\n\n`);
+  } else {
+    process.stdout.write(`\n  ${decision.action.toUpperCase()} — ${decision.severity} (${decision.latencyUs.toFixed(1)}µs)\n\n`);
+    for (const f of decision.findings) {
+      process.stdout.write(`    ${f.rule}  ${f.severity}  at ${f.path}\n      ${f.message}\n      match: ${JSON.stringify(f.match.slice(0, 120))}\n\n`);
+    }
+  }
+  return decision.action === "deny" ? 1 : 0;
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -44,6 +102,11 @@ async function main(): Promise<number> {
     process.stdout.write(HELP);
     return 0;
   }
+  // guard and bench are self-contained: they need no server config, so they run
+  // before the config is loaded and are usable in a repo that has never been pinned.
+  if (cmd === "bench") return bench(argv.includes("--json"));
+  if (cmd === "guard") return guard(argv[1], argv.slice(2));
+
   const flags = parseFlags(argv.slice(1));
   const config = await readConfig(flags.config);
   if (!config || !config.servers || Object.keys(config.servers).length === 0) {
